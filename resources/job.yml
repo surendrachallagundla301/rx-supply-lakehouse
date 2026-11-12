@@ -1,0 +1,42 @@
+resources:
+  jobs:
+    rx_lakehouse_daily:
+      name: rx-lakehouse-daily-${bundle.target}
+      schedule:
+        quartz_cron_expression: "0 30 5 * * ?"   # 05:30 UTC daily
+        timezone_id: UTC
+        pause_status: ${var.schedule_status}
+      email_notifications:
+        on_failure: []
+      job_clusters:
+        - job_cluster_key: etl
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: ${var.node_type}
+            num_workers: 2
+            data_security_mode: SINGLE_USER
+            spark_env_vars:
+              LAKEHOUSE_CATALOG: ${var.catalog}
+              LAKEHOUSE_SCHEMA: supply
+              LAKEHOUSE_RAW_PATH: ${var.raw_path}
+              LAKEHOUSE_FORMAT: delta
+      tasks:
+        - task_key: bronze
+          job_cluster_key: etl
+          python_wheel_task: {package_name: rx_lakehouse, entry_point: rx-pipeline, parameters: ["--layer", "bronze"]}
+          libraries: [{whl: ../dist/*.whl}]
+        - task_key: silver
+          depends_on: [{task_key: bronze}]
+          job_cluster_key: etl
+          python_wheel_task: {package_name: rx_lakehouse, entry_point: rx-pipeline, parameters: ["--layer", "silver"]}
+          libraries: [{whl: ../dist/*.whl}]
+        - task_key: gold
+          depends_on: [{task_key: silver}]
+          job_cluster_key: etl
+          python_wheel_task: {package_name: rx_lakehouse, entry_point: rx-pipeline, parameters: ["--layer", "gold"]}
+          libraries: [{whl: ../dist/*.whl}]
+        - task_key: quality_gates
+          depends_on: [{task_key: gold}]
+          job_cluster_key: etl
+          python_wheel_task: {package_name: rx_lakehouse, entry_point: rx-pipeline, parameters: ["--layer", "quality"]}
+          libraries: [{whl: ../dist/*.whl}]

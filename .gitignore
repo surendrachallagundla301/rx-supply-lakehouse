@@ -1,0 +1,14 @@
+data/
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+spark-warehouse/
+metastore_db/
+derby.log
+web/node_modules/
+web/dist/
+.databricks/
+.env

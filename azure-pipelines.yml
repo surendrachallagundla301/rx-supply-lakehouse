@@ -1,0 +1,86 @@
+# Azure DevOps pipeline
+#   PR / main: lint + test Python (PySpark), test + build React, build the wheel
+#   main:      deploy the Databricks bundle to dev, then prod after approval on the "prod" environment
+#
+# Setup in Azure DevOps:
+#   - Variable group "rx-lakehouse-dev" / "rx-lakehouse-prod": DATABRICKS_HOST, ARM_CLIENT_ID,
+#     ARM_TENANT_ID, ARM_CLIENT_SECRET (secret) for a service principal with workspace access
+#   - Environment "prod" with an approval check
+
+trigger:
+  branches: { include: [main] }
+pr:
+  branches: { include: [main] }
+
+variables:
+  pythonVersion: "3.11"
+  nodeVersion: "20.x"
+
+stages:
+  - stage: CI
+    jobs:
+      - job: python
+        displayName: Python lint and tests
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: $(pythonVersion) }
+          - task: JavaToolInstaller@0          # PySpark needs a JDK on the agent
+            inputs: { versionSpec: "17", jdkArchitectureOption: x64, jdkSourceOption: PreInstalled }
+          - script: pip install -e ".[local,api,dev]" build
+            displayName: Install
+          - script: ruff check src api tests
+            displayName: Lint
+          - script: pytest -q --junitxml=test-results.xml
+            displayName: Unit and integration tests (local Spark)
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs: { testResultsFiles: test-results.xml, testRunTitle: Python }
+          - script: python -m build --wheel
+            displayName: Build wheel
+          - publish: dist
+            artifact: wheel
+
+      - job: web
+        displayName: React tests and build
+        pool: { vmImage: ubuntu-latest }
+        steps:
+          - task: NodeTool@0
+            inputs: { versionSpec: $(nodeVersion) }
+          - script: npm ci && npm test && npm run build
+            workingDirectory: web
+            displayName: Test and build
+          - publish: web/dist
+            artifact: web
+
+  - stage: DeployDev
+    dependsOn: CI
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables: [{ group: rx-lakehouse-dev }]
+    jobs:
+      - deployment: bundle_dev
+        environment: dev
+        pool: { vmImage: ubuntu-latest }
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: .azure/deploy-bundle.yml
+                  parameters: { target: dev }
+
+  - stage: DeployProd
+    dependsOn: DeployDev
+    condition: succeeded()
+    variables: [{ group: rx-lakehouse-prod }]
+    jobs:
+      - deployment: bundle_prod
+        environment: prod          # approval gate configured on the environment
+        pool: { vmImage: ubuntu-latest }
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - template: .azure/deploy-bundle.yml
+                  parameters: { target: prod }
